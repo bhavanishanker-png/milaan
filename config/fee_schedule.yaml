@@ -1,0 +1,15 @@
+# Fee rates in basis points. 200 bps = 2.00%.
+# Verify against Razorpay's published pricing before submitting -- matching the
+# real slabs is cheap and reads as domain seriousness.
+
+gst_rate_bps: 1800
+
+methods:
+  upi: 0
+  card: 200
+  netbanking: 190
+  wallet: 200
+  emi: 300
+  international: 300
+
+effective_from: "2026-04-01"

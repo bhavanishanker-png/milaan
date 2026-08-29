@@ -1,0 +1,37 @@
+# Policy gate thresholds (Tier 4).
+# Never hardcode these in Python. Every value here should have a sweep behind
+# it -- see `make sweep`. Be ready to justify each one to the panel.
+
+gate:
+  # Chosen from the auto-resolve vs false-match curve. Raise it and escalation
+  # climbs; lower it and false matches climb. State your operating point and
+  # why in the README.
+  min_confidence: 0.85
+
+  # Above this, a human always looks, whatever the model thinks.
+  max_auto_apply_paise: 5000000   # Rs 50,000.00
+
+  # Classes safe to close without review.
+  auto_safe_classes:
+    - D01_TIMING_LAG
+    - D02_FEE_ROUNDING
+    - D03_NETTED_REFUND
+    - D06_MANGLED_NARRATION
+    - D07_MISSING_NARRATION
+
+  # Never auto-applied, at any confidence. There is a test enforcing this.
+  never_auto:
+    - D04_CHARGEBACK_DEBIT
+    - D11_UNIDENTIFIED_CREDIT
+    - D15_CURRENCY_MISMATCH
+
+solver:
+  date_window_days_before: 1
+  date_window_days_after: 3
+  max_subset_size: 6
+  per_cluster_timeout_seconds: 5
+  tolerance_paise_per_row: 3
+
+agent:
+  max_iterations: 6
+  precedent_k: 5
