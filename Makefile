@@ -1,6 +1,6 @@
 .PHONY: setup generate run evaluate ablation sweep test lint demo clean verify
 
-PY := python
+PY := python3
 SEED_A := 20260101
 SEED_B := 20260202
 SEED_C := 20260303

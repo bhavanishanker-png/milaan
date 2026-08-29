@@ -49,9 +49,13 @@ def write_labels(
 
     true_matches = []
     for br in batch_records:
-        # Batches with any injected discrepancy appear in injected_discrepancies, not true_matches.
-        if br.disc_codes:
-            continue
+        # Every settlement batch has a correct bank-row pairing — even discrepancy
+        # batches (D03 refunds, D04 chargebacks, etc.) because the bank deposit equals
+        # Σ net(payments) − Σ refund − Σ chargeback exactly as the settlement rows say.
+        # disc_codes records the anomaly class; it does NOT mean the pairing is wrong.
+        # Exceptions: D10 adds an order with no settlement row (no pairing exists);
+        # D11 adds a bank credit with no settlement batch.  Both of those produce
+        # disc_records with class=BANK_ONLY or class=LEDGER_ONLY, not BatchRecords.
         # Find the bank row for this batch (prefer UTR lookup; fall back to stored index).
         bank_idx = utr_to_bank_idx.get(br.settlement_utr, br.bank_row_index)
         all_entities = (
