@@ -31,6 +31,16 @@ solver:
   max_subset_size: 6
   per_cluster_timeout_seconds: 5
   tolerance_paise_per_row: 3
+  # Confidence scores emitted by each T2 resolution method.
+  # T4 gate rejects matches below gate.min_confidence (0.85).
+  confidence_fuzzy_utr_exact: 0.95      # fuzzy UTR recovery + exact amount
+  confidence_fuzzy_utr_tolerance: 0.90  # fuzzy UTR recovery + amount within tolerance
+  confidence_amount_tolerance: 0.90     # exact UTR + amount within rounding tolerance
+  confidence_date_window_exact: 0.95    # date window + exact amount (no UTR)
+  confidence_date_window_tolerance: 0.88 # date window + amount within tolerance
+  # Confidence is reduced linearly as delta approaches tolerance.
+  # confidence = confidence_amount_tolerance - (delta / tolerance) * confidence_tolerance_slope
+  confidence_tolerance_slope: 0.05
 
 agent:
   max_iterations: 6

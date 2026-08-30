@@ -14,22 +14,17 @@ import sys
 from pathlib import Path
 
 # eval/ is NOT under src/, so it may read labels freely.
-# Metrics is also in eval/.
+# metrics.py is in the same eval/ directory — Python adds the script dir to sys.path.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-import metrics as _metrics  # noqa: E402 — relative import from eval/
+import metrics as _metrics  # noqa: E402
 
 
 def _pct(v: float) -> str:
     return f"{v * 100:6.2f}%"
 
 
-def _bar(v: float, width: int = 20) -> str:
-    filled = round(v * width)
-    return "█" * filled + "░" * (width - filled)
-
-
-def _print_table(report: _metrics.MetricsReport) -> None:
-    w = 54  # table width
+def _print_table(report: _metrics.MetricsReport, tiers: str = "T1") -> None:
+    w = 54
 
     def row(label: str, value: str, highlight: bool = False) -> None:
         marker = "▶" if highlight else " "
@@ -42,15 +37,14 @@ def _print_table(report: _metrics.MetricsReport) -> None:
     row("Settlement batches",          str(report.total_settlement_batches))
     row("Labels true matches",         str(report.total_true_matches))
     print("├" + "─" * w + "┤")
-    row("Pipeline matches (T1)",       str(report.pipeline_matches))
+    row(f"Pipeline matches ({tiers})",  str(report.pipeline_matches))
     row("Auto-resolve rate",           _pct(report.auto_resolve_rate))
     print("├" + "─" * w + "┤")
 
-    # False-match rate gets its own highlighted block — it costs money.
     print(f"│  {'FALSE-MATCH RATE (costs money)':^{w-2}}│")
     print("├" + "─" * w + "┤")
-    row("False positives (bad matches)", str(report.false_positives),    highlight=True)
-    row("FALSE-MATCH RATE",              _pct(report.false_match_rate),  highlight=True)
+    row("False positives (bad matches)", str(report.false_positives),   highlight=True)
+    row("FALSE-MATCH RATE",             _pct(report.false_match_rate),  highlight=True)
     print("├" + "─" * w + "┤")
 
     row("True positives",              str(report.true_positives))
@@ -63,7 +57,7 @@ def _print_table(report: _metrics.MetricsReport) -> None:
 
     if report.exc_type_counts:
         print()
-        print("  Exception breakdown (T1):")
+        print("  Exception breakdown:")
         for exc_type, cnt in sorted(report.exc_type_counts.items()):
             print(f"    {exc_type:<30} {cnt:>4}")
 
@@ -86,7 +80,7 @@ def main() -> None:
     parser.add_argument("--labels", required=True, help="Path to labels.json")
     args = parser.parse_args()
 
-    run_dir    = Path(args.run)
+    run_dir     = Path(args.run)
     labels_path = Path(args.labels)
 
     results_path = run_dir / "results.json"
@@ -98,7 +92,8 @@ def main() -> None:
     labels  = json.loads(labels_path.read_text())
 
     report = _metrics.compute(results, labels)
-    _print_table(report)
+    tiers  = "+".join(results.get("pipeline_tiers", ["T1"]))
+    _print_table(report, tiers=tiers)
 
 
 if __name__ == "__main__":

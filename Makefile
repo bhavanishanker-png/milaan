@@ -21,7 +21,8 @@ evaluate:
 	$(PY) eval/evaluate.py --run out/a --labels data/a/labels.json
 
 ablation:
-	$(PY) eval/ablation.py --data data/b --out out/ablation
+	$(PY) -m milaan.pipeline --data data/b --out out/b
+	$(PY) eval/ablation.py --run out/b --labels data/b/labels.json
 
 sweep:
 	$(PY) eval/sweep.py --data data/b --out out/sweep

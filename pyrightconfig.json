@@ -1,0 +1,6 @@
+{
+  "pythonVersion": "3.11",
+  "extraPaths": ["src", "."],
+  "include": ["src", "eval", "tests"],
+  "exclude": ["data", "out", ".venv", "__pycache__"]
+}
