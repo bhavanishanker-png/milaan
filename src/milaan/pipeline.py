@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,9 @@ import yaml
 from milaan.normalize.adapters import bank_hdfc, psp_razorpay, ledger
 from milaan.normalize.canonical import IST
 from milaan.match import deterministic, solver
+from milaan.policy import gate as gate_mod
+from milaan.policy.audit import AuditLog
+from milaan.journal import propose as journal_propose
 
 _POLICY_PATH = Path(__file__).parents[2] / "config" / "policy.yaml"
 
@@ -119,15 +123,22 @@ def _run(data_dir: Path, out_dir: Path, run_t3: bool = True) -> dict:
 
     policy = _load_policy()
 
+    _t0 = time.perf_counter()
+
     # T1 — exact UTR + exact amount
     t1 = deterministic.run(bank_rows, setl_rows)
+    _t1_ms = int((time.perf_counter() - _t0) * 1000)
 
+    _ts2 = time.perf_counter()
     # T2 — constrained solver on T1 residual
     t2 = solver.run(bank_rows, setl_rows, t1, policy=policy)
+    _t2_ms = int((time.perf_counter() - _ts2) * 1000)
 
     # T3 — LangGraph agent on T2 residual
     t3_matches: list[dict] = []
     t3_exceptions: list[dict] = []
+    _ts3 = time.perf_counter()
+    _t3_ms = 0
 
     if run_t3 and t2.exceptions:
         try:
@@ -178,32 +189,146 @@ def _run(data_dir: Path, out_dir: Path, run_t3: bool = True) -> dict:
 
         except Exception as exc:
             t3_exceptions.append({"exc_type": "T3_INIT_ERROR", "detail": str(exc), "tier_reached": "T3"})
+    _t3_ms = int((time.perf_counter() - _ts3) * 1000)
 
     now = datetime.now(tz=IST).isoformat()
 
-    def _match_dict(m, tier: str) -> dict:
-        return {
-            "bank_row":       m.bank_row_index,
-            "settlement_id":  m.settlement_id,
-            "settlement_utr": m.settlement_utr,
-            "deposit_paise":  m.bank_deposit_paise,
-            "tier":           tier,
-        }
+    # T4 — Policy gate + audit log + journal entries
+    audit     = AuditLog(out_dir / "audit.ndjson")
+    gate_cfg  = policy.get("gate", {})
+    journal_lines: list[dict] = []
 
-    all_matches = (
-        [_match_dict(m, "T1") for m in t1.matches]
-        + [_match_dict(m, "T2") for m in t2.matches]
-        + t3_matches
-    )
+    all_matches: list[dict] = []
+    all_exceptions: list[dict] = []
 
-    # T2 residual exceptions not escalated by T3
+    # --- T1 matches (confidence = 1.0, reason = EXACT_MATCH) ---
+    for m in t1.matches:
+        gr = gate_mod.evaluate(
+            confidence=1,
+            amount_paise=m.bank_deposit_paise,
+            reason_code="EXACT_MATCH",
+            gate_config=gate_cfg,
+        )
+        audit.record(
+            actor="tier1", event=gr.decision.value,
+            bank_row=m.bank_row_index, settlement_id=m.settlement_id,
+            tier="T1", confidence=1,
+            reason_code="EXACT_MATCH",
+            rationale=gr.reason,
+        )
+        if gr.decision == gate_mod.GateDecision.AUTO_APPLY:
+            all_matches.append({
+                "bank_row":       m.bank_row_index,
+                "settlement_id":  m.settlement_id,
+                "settlement_utr": m.settlement_utr,
+                "deposit_paise":  m.bank_deposit_paise,
+                "tier":           "T1",
+                "confidence":     1,
+            })
+            je = journal_propose(
+                settlement_id=m.settlement_id,
+                bank_row_index=m.bank_row_index,
+                bank_deposit_paise=m.bank_deposit_paise,
+                settlement_net_paise=m.batch_total_paise,
+                tier="T1", reason_code="EXACT_MATCH",
+            )
+            journal_lines.append({
+                "settlement_id": je.settlement_id,
+                "bank_row": je.bank_row,
+                "tier": je.tier,
+                "reason_code": je.reason_code,
+                "balanced": je.is_balanced(),
+                "lines": [
+                    {"account": l.account, "debit": l.debit_paise, "credit": l.credit_paise}
+                    for l in je.lines
+                ],
+            })
+        else:
+            all_exceptions.append({
+                "exc_type": "GATE_BLOCK",
+                "bank_row": m.bank_row_index,
+                "settlement_id": m.settlement_id,
+                "detail": gr.reason,
+                "tier_reached": "T4",
+            })
+
+    # --- T2 matches ---
+    for m in t2.matches:
+        gr = gate_mod.evaluate(
+            confidence=m.confidence,
+            amount_paise=m.bank_deposit_paise,
+            reason_code=m.resolution_method,
+            gate_config=gate_cfg,
+        )
+        audit.record(
+            actor="tier2", event=gr.decision.value,
+            bank_row=m.bank_row_index, settlement_id=m.settlement_id,
+            tier="T2", confidence=m.confidence,
+            reason_code=m.resolution_method,
+            rationale=gr.reason,
+        )
+        if gr.decision == gate_mod.GateDecision.AUTO_APPLY:
+            all_matches.append({
+                "bank_row":        m.bank_row_index,
+                "settlement_id":   m.settlement_id,
+                "settlement_utr":  m.settlement_utr,
+                "deposit_paise":   m.bank_deposit_paise,
+                "tier":            "T2",
+                "confidence":      m.confidence,
+                "resolution_method": m.resolution_method,
+            })
+            je = journal_propose(
+                settlement_id=m.settlement_id,
+                bank_row_index=m.bank_row_index,
+                bank_deposit_paise=m.bank_deposit_paise,
+                settlement_net_paise=m.batch_total_paise,
+                tier="T2", reason_code=m.resolution_method,
+            )
+            journal_lines.append({
+                "settlement_id": je.settlement_id,
+                "bank_row": je.bank_row,
+                "tier": je.tier,
+                "reason_code": je.reason_code,
+                "balanced": je.is_balanced(),
+                "lines": [
+                    {"account": l.account, "debit": l.debit_paise, "credit": l.credit_paise}
+                    for l in je.lines
+                ],
+            })
+        else:
+            all_exceptions.append({
+                "exc_type": "GATE_BLOCK",
+                "bank_row": m.bank_row_index,
+                "settlement_id": m.settlement_id,
+                "settlement_utr": m.settlement_utr,
+                "detail": gr.reason,
+                "tier_reached": "T4",
+            })
+
+    # --- T3 matches (already gate-filtered in T3 block above) ---
+    for m in t3_matches:
+        audit.record(
+            actor="tier3", event="AUTO_APPLY",
+            bank_row=m.get("bank_row"), settlement_id=m.get("settlement_id"),
+            tier="T3", confidence=m.get("confidence"),
+            reason_code=m.get("reason_code"),
+            rationale="T3 gate passed inside T3 block",
+        )
+        all_matches.append(m)
+
+    # --- T2 residual exceptions ---
     t2_exception_ids = {(e.bank_row_index, e.settlement_id) for e in t2.exceptions}
     t3_exc_ids       = {(e.get("bank_row"), e.get("settlement_id")) for e in t3_exceptions}
 
-    all_exceptions = []
     for e in t2.exceptions:
         key = (e.bank_row_index, e.settlement_id)
         tier = "T3" if (key in t3_exc_ids) else "T2"
+        audit.record(
+            actor=f"tier{tier[-1].lower()}" if tier else "tier2",
+            event="EXCEPTION",
+            bank_row=e.bank_row_index, settlement_id=e.settlement_id,
+            tier=tier, reason_code=e.exc_type, rationale=str(e.detail),
+        )
         all_exceptions.append({
             "exc_type":       e.exc_type,
             "bank_row":       e.bank_row_index,
@@ -212,24 +337,34 @@ def _run(data_dir: Path, out_dir: Path, run_t3: bool = True) -> dict:
             "detail":         e.detail,
             "tier_reached":   tier,
         })
-    # Any pure T3 exceptions (e.g. T3_INIT_ERROR)
+
     for e in t3_exceptions:
         if (e.get("bank_row"), e.get("settlement_id")) not in t2_exception_ids:
             all_exceptions.append(e)
 
+    # Write journal
+    journal_path = out_dir / "journal.ndjson"
+    with journal_path.open("w", encoding="utf-8") as fh:
+        for je in journal_lines:
+            fh.write(json.dumps(je) + "\n")
+
     n_settlement_credits = sum(1 for r in bank_rows if r.is_settlement_credit)
-    total_matched = t1.n_matched + t2.n_matched + len(t3_matches)
+    total_matched = len(all_matches)
 
     tiers = ["T1", "T2"]
     if run_t3:
         tiers.append("T3")
+    tiers.append("T4")
+
+    _total_ms = int((time.perf_counter() - _t0) * 1000)
+    n_records = len(order_rows)
 
     return {
         "run_at":                   now,
         "pipeline_tiers":           tiers,
         "data_dir":                 str(data_dir),
         "total_bank_rows":          len(bank_rows),
-        "total_order_rows":         len(order_rows),
+        "total_order_rows":         n_records,
         "total_settlement_rows":    sum(len(b.rows) for b in setl_rows),
         "total_settlement_batches": len(setl_rows),
         "settlement_credits_in_bank": n_settlement_credits,
@@ -240,6 +375,15 @@ def _run(data_dir: Path, out_dir: Path, run_t3: bool = True) -> dict:
         "t2_exceptions":            t2.n_exceptions,
         "t2_timeouts":              len(t2.timeouts),
         "t3_exceptions":            len(t3_exceptions),
+        "timing_ms": {
+            "t1": _t1_ms,
+            "t2": _t2_ms,
+            "t3": _t3_ms,
+            "total": _total_ms,
+        },
+        "throughput_records_per_min": (
+            int(n_records / (_total_ms / 60000)) if _total_ms > 0 else 0
+        ),
         "matches":                  all_matches,
         "exceptions":               all_exceptions,
     }

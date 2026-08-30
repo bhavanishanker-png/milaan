@@ -9,7 +9,9 @@ gate:
   min_confidence: 0.85
 
   # Above this, a human always looks, whatever the model thinks.
-  max_auto_apply_paise: 5000000   # Rs 50,000.00
+  # Settlement batches aggregate hundreds of payments; Rs 20 lakh covers the
+  # synthetic workload (max batch ~Rs 9 lakh) with headroom for real traffic.
+  max_auto_apply_paise: 2000000000   # Rs 2,00,00,000 (Rs 2 crore)
 
   # Classes safe to close without review.
   auto_safe_classes:

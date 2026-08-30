@@ -25,7 +25,7 @@ ablation:
 	$(PY) eval/ablation.py --run out/b --labels data/b/labels.json
 
 sweep:
-	$(PY) eval/sweep.py --data data/b --out out/sweep
+	$(PY) eval/sweep.py --run out/a --labels data/a/labels.json
 
 # Phase 8 only. Runs once, after code freeze. Numbers go straight to the README.
 verify:
